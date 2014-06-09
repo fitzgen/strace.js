@@ -2,24 +2,30 @@ if (typeof Set != "function") {
   // This is a horrible and incomplete polyfill implementation for ES6 Set. Deal
   // with it.
 
-  this.Set = function () {
-    this._items = [];
-  }
+  (typeof global == "object" ? global : this).Set = (function () {
+    var push = Array.prototype.push;
+    var indexOf = Array.prototype.indexOf;
 
-  Set.prototype.add = function (x) {
-    this._items.push(x);
-  };
+    function Set() {
+      this._items = [];
+    };
 
-  Set.prototype.has = function (x) {
-    return this._items.indexOf(x) === -1;
-  };
+    Set.prototype.add = function (x) {
+      push.call(this._items, x);
+    };
+
+    Set.prototype.has = function (x) {
+      return indexOf.call(this._items, x) === -1;
+    };
+
+    return Set;
+  }());
 }
 
 (function (root, factory) {
   if (typeof define === "function" && define.amd) {
     define(factory);
   } else if (typeof exports === "object") {
-    require("traceur/bin/traceur-runtime");
     module.exports = factory();
   } else {
     root.strace = factory();
@@ -34,16 +40,24 @@ if (typeof Set != "function") {
   var trace                 = console.trace.bind(console);
   var warn                  = console.warn.bind(console);
   var functionProtoToString = Function.prototype.toString;
-  var objProtoToString      = Object.prototype.toString;
+  var objectProtoToString   = Object.prototype.toString;
   var slice                 = Array.prototype.slice;
-  var push                  = Array.prototype.push;
+  var arrayProtoPush        = Array.prototype.push;
   var apply                 = Function.prototype.apply;
 
   function toArray(it) {
     return slice.call(it);
   }
 
+  function push(array, item) {
+    return arrayProtoPush.call(array, item);
+  }
+
+  // Matches the "function () { [native code] }" form that native functions
+  // stringify to.
   var NATIVE_FUNCTION_SOURCE_REGEXP = /^\s*function \w*\([\s\S]*\)\s*\{\s*\[native code\]\s*\}\s*$/;
+
+  // Returns true if the given thing is a native function, false otherwise.
   function isNativeFunction(thing) {
     if (typeof thing != "function") {
       return false;
@@ -56,20 +70,21 @@ if (typeof Set != "function") {
     }
   }
 
-  function dfs(node, parent, name, seen, type, visit) {
+  var TYPES = ["value", "get", "set"];
+  var TYPES_LENGTH = TYPES.length;
+
+  // To a depth first search of all objects on the heap reachable from node. The
+  // visit function is called for each native function found.
+  function dfs(node, seen, visit) {
     if (!node) {
       return;
     }
 
     seen.add(node);
 
-    if (isNativeFunction(node)) {
-      visit(node, parent, name, type);
-    }
-
-    if (node && (typeof node == "object" || typeof node == "function")) {
+    if (typeof node == "object" || typeof node == "function") {
       var edges = Object.getOwnPropertyNames(node);
-      edges.push("__proto__");
+      push(edges, "__proto__");
 
       for (var i = edges.length; i; i--) {
         var name = edges[i];
@@ -84,21 +99,23 @@ if (typeof Set != "function") {
           continue;
         }
 
-        if (desc.value && !seen.has(desc.value)) {
-          dfs(desc.value, node, name, seen, "value", visit);
-        }
-        if (desc.get && !seen.has(desc.get)) {
-          dfs(desc.get, node, name, seen, "get", visit);
-        }
-        if (desc.set && !seen.has(desc.set)) {
-          dfs(desc.set, node, name, seen, "set", visit);
+        for (var j = 0; j < TYPES_LENGTH; j++) {
+          var type = TYPES[j];
+          if (desc[type]) {
+            if (isNativeFunction(desc[type])) {
+              visit(desc[type], node, name, type);
+            }
+            if (!seen.has(desc[type])) {
+              dfs(desc[type], seen, visit);
+            }
+          }
         }
       }
     }
   }
 
   function makePrettyName(parent, name, type) {
-    var parentName = objProtoToString.call(parent).slice(8, -1);
+    var parentName = objectProtoToString.call(parent).slice(8, -1);
 
     if (type == "value") {
       return parentName + "." + name;
@@ -108,6 +125,8 @@ if (typeof Set != "function") {
   }
 
   function copyProperty(func, punched, desc, name) {
+    // TODO remove desc param and just get it inside here?
+
     if (!desc.configurable) {
       return;
     }
@@ -206,10 +225,10 @@ if (typeof Set != "function") {
       if (strace.logging) {
         var logArgs = [prettyName];
         if (strace.loggingThis) {
-          push.call(logArgs, this);
+          push(logArgs, this);
         }
         if (strace.loggingArguments) {
-          push.call(logArgs, toArray(arguments));
+          push(logArgs, toArray(arguments));
         }
         apply.call(log, null, logArgs);
         if (strace.loggingStacks) {
@@ -239,8 +258,8 @@ if (typeof Set != "function") {
   function findNatives(root, seen) {
     var natives = [];
 
-    dfs(root, null, null, seen, null, function (func, parent, name, type) {
-      natives.push({
+    dfs(root, seen, function (func, parent, name, type) {
+      push(natives, {
         func: func,
         parent: parent,
         name: name,
